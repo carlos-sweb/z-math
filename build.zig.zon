@@ -1,0 +1,14 @@
+.{
+    .name = .zmath,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0xfd23d4224efe9e26,
+    .description = "ECMAScript-compatible Math namespace (spec-exact rounding, NaN propagation) in Zig",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+        "README.md",
+    },
+    .dependencies = .{},
+}
