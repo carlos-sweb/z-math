@@ -10,8 +10,16 @@ pub const LOG2E: f64 = std.math.log2e;
 pub const SQRT1_2: f64 = std.math.sqrt1_2;
 pub const SQRT2: f64 = std.math.sqrt2;
 
+/// Mirrors spec IsIntegralNumber: finite AND trunc(x) == x. `@trunc` alone
+/// isn't enough -- `@trunc(Infinity) == Infinity` holds in IEEE754, so a
+/// bare truncation check wrongly calls +-Infinity "integral" (spec
+/// explicitly excludes it). Caught via pow()'s isOddInteger(exponent)
+/// call misfiring when BOTH base and exponent are infinite (e.g.
+/// pow(-Infinity, +Infinity) took the odd-integer branch and returned
+/// -Infinity instead of the correct +Infinity) -- confirmed against real
+/// Node before fixing.
 fn isInteger(x: f64) bool {
-    return @trunc(x) == x;
+    return std.math.isFinite(x) and @trunc(x) == x;
 }
 
 fn isOddInteger(x: f64) bool {
@@ -23,11 +31,20 @@ fn isOddInteger(x: f64) bool {
 /// which round half away from zero (round(-0.5) === -1 in Zig, but JS's
 /// Math.round(-0.5) === -0). Verified the divergence by compiling a probe
 /// before writing this.
+///
+/// Deliberately NOT `@floor(x + 0.5)`: that naive form loses precision near
+/// a .5 boundary -- `x + 0.5` can itself round up to the next representable
+/// double before `@floor` ever runs (e.g. `x = 0.5 - Number.EPSILON/4`
+/// computes `x + 0.5` as exactly `1.0`, giving round(x) == 1 instead of the
+/// correct 0; confirmed against real Node, and test262 catches exactly
+/// this). Comparing `x - floor(x)` against 0.5 instead avoids adding two
+/// close-in-magnitude values, so it doesn't manufacture that extra ULP.
 pub fn round(x: f64) f64 {
     if (std.math.isNan(x) or std.math.isInf(x) or x == 0) return x;
-    const r = @floor(x + 0.5);
-    if (r == 0 and x < 0) return -0.0;
-    return r;
+    if (x < 0 and x >= -0.5) return -0.0;
+    const f = @floor(x);
+    const diff = x - f;
+    return if (diff >= 0.5) f + 1 else f;
 }
 
 /// Math.trunc() - truncate toward zero. Matches @trunc() bit-for-bit
