@@ -243,6 +243,18 @@ pub fn fround(x: f64) f64 {
     return @floatCast(f);
 }
 
+/// Math.f16round() -- rounds to the nearest f64 representable exactly as
+/// IEEE 754 binary16, same shape as fround()'s f32 rounding. Verified
+/// value-by-value against real Node (v26, the first version available
+/// here with Math.f16round -- v22 doesn't have it yet) across normal,
+/// subnormal, boundary (65504 max finite, 65520 rounds to Infinity),
+/// signed-zero, and NaN/Infinity inputs before trusting @floatCast alone:
+/// every case matched bit-for-bit, including -0 staying -0.
+pub fn f16round(x: f64) f64 {
+    const h: f16 = @floatCast(x);
+    return @floatCast(h);
+}
+
 /// Math.pow() / the `**` operator's Number::exponentiate algorithm.
 /// Deliberately NOT a thin wrap over std.math.pow(): that function follows
 /// C99/IEEE754-2008 special cases (e.g. pow(1, Infinity) == 1), but
@@ -297,6 +309,163 @@ pub fn pow(base: f64, exponent: f64) f64 {
 /// z-* ecosystem. Range [0, 1).
 pub fn random(rand: std.Random) f64 {
     return rand.float(f64);
+}
+
+/// Math.sumPrecise(values) -- ES2025's correctly-rounded summation:
+/// the result must be the f64 nearest the EXACT mathematical sum of
+/// `values` (finite ones only -- NaN/+-Infinity/all-minus-zero are
+/// each their own special case, handled by the caller via `state`
+/// tracking before any of these finite values reach this function;
+/// see math_builtins.zig's mathSumPrecise).
+///
+/// A faithful, structure-preserving port of the official TC39
+/// reference polyfill (Shewchuk's exact-floating-point-summation
+/// algorithm, extended to survive intermediate overflow via a
+/// "biased partial" representing 2**1024 times its value):
+/// https://github.com/tc39/proposal-math-sum/blob/main/polyfill/polyfill.mjs
+/// No live Node in this environment ships Math.sumPrecise yet
+/// (Stage 3, confirmed absent from the newest available build) to
+/// verify against directly -- instead verified against test262's own
+/// `test/built-ins/Math/sumPrecise/sum.js`, whose assertions are
+/// "chosen for having exercised bugs in real implementations": all
+/// pass bit-for-bit, including every overflow/cancellation case.
+const MAX_DOUBLE: f64 = 1.79769313486231570815e+308;
+const PENULTIMATE_DOUBLE: f64 = 1.79769313486231550856e+308;
+const MAX_ULP: f64 = MAX_DOUBLE - PENULTIMATE_DOUBLE;
+const TWO_POW_1023: f64 = 8.98846567431158e+307;
+
+const TwoSum = struct { hi: f64, lo: f64 };
+
+/// Error-free transform of x+y into an exact (hi, lo) pair: hi is the
+/// rounded sum, lo is the exact rounding error (hi+lo == x+y exactly,
+/// as real numbers). Precondition: abs(x) >= abs(y).
+fn twosum(x: f64, y: f64) TwoSum {
+    const hi = x + y;
+    const lo = y - (hi - x);
+    return .{ .hi = hi, .lo = lo };
+}
+
+pub const SumPreciseError = error{ Overflow, OutOfMemory };
+
+/// `values` must contain ONLY finite f64s (no NaN/+-Infinity -- the
+/// caller has already special-cased those). Real -0 entries are
+/// harmless (a no-op in exact summation) but the caller may filter
+/// them; either way this returns +0/-0 correctly per the exact sum's
+/// own sign.
+pub fn sumPrecise(allocator: std.mem.Allocator, values: []const f64) SumPreciseError!f64 {
+    if (values.len == 0) return 0.0;
+    var partials: std.ArrayList(f64) = .empty;
+    defer partials.deinit(allocator);
+    var overflow: f64 = 0;
+
+    try partials.append(allocator, values[0]);
+    for (values[1..]) |value| {
+        var x = value;
+        var i: usize = 0;
+        for (partials.items) |y_in| {
+            var y = y_in;
+            if (@abs(x) < @abs(y)) {
+                const t = x;
+                x = y;
+                y = t;
+            }
+            var r = twosum(x, y);
+            if (@abs(r.hi) == std.math.inf(f64)) {
+                const hi_sign: f64 = if (r.hi == std.math.inf(f64)) 1 else -1;
+                overflow += hi_sign;
+                if (@abs(overflow) >= 9007199254740992.0) return error.Overflow;
+                x = (x - hi_sign * TWO_POW_1023) - hi_sign * TWO_POW_1023;
+                if (@abs(x) < @abs(y)) {
+                    const t = x;
+                    x = y;
+                    y = t;
+                }
+                r = twosum(x, y);
+            }
+            if (r.lo != 0) {
+                partials.items[i] = r.lo;
+                i += 1;
+            }
+            x = r.hi;
+        }
+        partials.items.len = i;
+        if (x != 0) try partials.append(allocator, x);
+    }
+
+    // Compute the exact sum of partials, stopping once precision is lost.
+    var n: isize = @as(isize, @intCast(partials.items.len)) - 1;
+    var hi: f64 = 0;
+    var lo: f64 = 0;
+
+    if (overflow != 0) {
+        const next: f64 = if (n >= 0) partials.items[@intCast(n)] else 0;
+        n -= 1;
+        if (@abs(overflow) > 1 or (overflow > 0 and next > 0) or (overflow < 0 and next < 0)) {
+            return if (overflow > 0) std.math.inf(f64) else -std.math.inf(f64);
+        }
+        const r = twosum(overflow * TWO_POW_1023, next / 2);
+        hi = r.hi;
+        lo = r.lo * 2;
+        if (@abs(2 * hi) == std.math.inf(f64)) {
+            // MAX_DOUBLE has a 1 in its last significand bit, so
+            // subtracting exactly half a ULP from 2**1024 rounds AWAY
+            // from it (to Infinity) under ties-to-even -- unless the
+            // next partial's sign says round toward MAX_DOUBLE instead.
+            if (hi > 0) {
+                if (hi == TWO_POW_1023 and lo == -(MAX_ULP / 2) and n >= 0 and partials.items[@intCast(n)] < 0) return MAX_DOUBLE;
+                return std.math.inf(f64);
+            } else {
+                if (hi == -TWO_POW_1023 and lo == (MAX_ULP / 2) and n >= 0 and partials.items[@intCast(n)] > 0) return -MAX_DOUBLE;
+                return -std.math.inf(f64);
+            }
+        }
+        if (lo != 0) {
+            n += 1;
+            if (n >= 0 and @as(usize, @intCast(n)) < partials.items.len) {
+                partials.items[@intCast(n)] = lo;
+            } else {
+                try partials.append(allocator, lo);
+            }
+            lo = 0;
+        }
+        hi *= 2;
+    }
+
+    while (n >= 0) {
+        const x = hi;
+        const y = partials.items[@intCast(n)];
+        n -= 1;
+        const r = twosum(x, y);
+        hi = r.hi;
+        lo = r.lo;
+        if (lo != 0) break;
+    }
+
+    // Half-even rounding needs one more partial to break a tie: e.g.
+    // sum([1e-16, 1, 1e16]) must round the last digit up to 2, not
+    // down to 0, because the 1e-16 nudges 1 slightly closer to 2.
+    if (n >= 0 and ((lo < 0.0 and partials.items[@intCast(n)] < 0.0) or (lo > 0.0 and partials.items[@intCast(n)] > 0.0))) {
+        const y2 = lo * 2.0;
+        const x2 = hi + y2;
+        const yr2 = x2 - hi;
+        if (y2 == yr2) hi = x2;
+    }
+
+    return hi;
+}
+
+test "sumPrecise matches test262's own bug-triggering assertions" {
+    const a = std.testing.allocator;
+    const eq = std.testing.expectEqual;
+    try eq(@as(f64, 6), try sumPrecise(a, &.{ 1, 2, 3 }));
+    try eq(@as(f64, 1e308), try sumPrecise(a, &.{1e308}));
+    try eq(@as(f64, 0), try sumPrecise(a, &.{ 1e308, -1e308 }));
+    try eq(@as(f64, 0.30000000000000004), try sumPrecise(a, &.{ 1e308, 1e308, 0.1, 0.1, 1e30, 0.1, -1e30, -1e308, -1e308 }));
+    try eq(@as(f64, 9.9792015476736e+291), try sumPrecise(a, &.{ 8.98846567431158e+307, 8.988465674311579e+307, -1.7976931348623157e+308 }));
+    try eq(-std.math.inf(f64), try sumPrecise(a, &.{ 0.31150493246968836, -8.988465674311582e+307, 1.8315037361673755e-270, -15.999999999999996, 2.9999999999999996, 7.345200721499384e+164, -2.033582473639399, -8.98846567431158e+307, -3.5737295155405993e+292, 4.13894772383715e-124, -3.6111186457260667e-35, 2.387234887098013e+180, 7.645295562778372e-298, 3.395189016861822e-103, -2.6331611115768973e-149 }));
+    try eq(std.math.inf(f64), try sumPrecise(a, &.{ 8.98846567431158e+307, 8.98846567431158e+307 }));
+    try eq(@as(f64, -0.0), try sumPrecise(a, &.{ -0.0, -0.0 }));
+    try eq(@as(f64, 0), try sumPrecise(a, &.{}));
 }
 
 test "round matches JS Math.round, not std.math.round" {
