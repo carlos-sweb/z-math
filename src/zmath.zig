@@ -1,13 +1,25 @@
+//! Numerical helpers for ECMAScript Math, operating on f64 values.
+//! JavaScript coercion, object properties, iterators, and realm state belong to the caller.
+//! Transcendental results may differ from other engines within implementation approximations.
+
 const std = @import("std");
 
 // Constants (ECMA-262 Math.* value properties).
+/// Pi, the ratio of a circle's circumference to its diameter.
 pub const PI: f64 = std.math.pi;
+/// Euler's number, the base of the natural logarithm.
 pub const E: f64 = std.math.e;
+/// Natural logarithm of 10.
 pub const LN10: f64 = std.math.ln10;
+/// Natural logarithm of 2.
 pub const LN2: f64 = std.math.ln2;
+/// Base-10 logarithm of Euler's number.
 pub const LOG10E: f64 = std.math.log10e;
+/// Base-2 logarithm of Euler's number.
 pub const LOG2E: f64 = std.math.log2e;
+/// Square root of one half.
 pub const SQRT1_2: f64 = std.math.sqrt1_2;
+/// Square root of 2.
 pub const SQRT2: f64 = std.math.sqrt2;
 
 /// Mirrors spec IsIntegralNumber: finite AND trunc(x) == x. `@trunc` alone
@@ -53,14 +65,17 @@ pub fn trunc(x: f64) f64 {
     return @trunc(x);
 }
 
+/// Returns the greatest integral f64 no greater than x; preserves signed zero.
 pub fn floor(x: f64) f64 {
     return @floor(x);
 }
 
+/// Returns the least integral f64 no less than x; preserves signed zero.
 pub fn ceil(x: f64) f64 {
     return @ceil(x);
 }
 
+/// Returns the absolute value of x, mapping either zero to +0.
 pub fn abs(x: f64) f64 {
     return @abs(x);
 }
@@ -138,92 +153,115 @@ pub fn clz32(x: f64) f64 {
     return @floatFromInt(@clz(u));
 }
 
+/// Returns the square root of x; preserves signed zero and returns NaN for negative inputs.
 pub fn sqrt(x: f64) f64 {
     return @sqrt(x);
 }
 
+/// Returns an approximation to the cube root of x, including negative inputs.
 pub fn cbrt(x: f64) f64 {
     return std.math.cbrt(x);
 }
 
+/// Returns an approximation to e raised to x.
 pub fn exp(x: f64) f64 {
     return @exp(x);
 }
 
+/// Returns an approximation to exp(x) - 1, retaining precision near zero.
 pub fn expm1(x: f64) f64 {
     return std.math.expm1(x);
 }
 
+/// Returns an approximation to the natural logarithm of x.
 pub fn log(x: f64) f64 {
     return @log(x);
 }
 
+/// Returns an approximation to the base-2 logarithm of x.
 pub fn log2(x: f64) f64 {
     return std.math.log2(x);
 }
 
+/// Returns an approximation to the base-10 logarithm of x.
 pub fn log10(x: f64) f64 {
     return std.math.log10(x);
 }
 
+/// Returns an approximation to log(1 + x), retaining precision near zero.
 pub fn log1p(x: f64) f64 {
     return std.math.log1p(x);
 }
 
+/// Returns an approximation to the sine of x, measured in radians.
 pub fn sin(x: f64) f64 {
     return @sin(x);
 }
 
+/// Returns an approximation to the cosine of x, measured in radians.
 pub fn cos(x: f64) f64 {
     return @cos(x);
 }
 
+/// Returns an approximation to the tangent of x, measured in radians.
 pub fn tan(x: f64) f64 {
     return @tan(x);
 }
 
+/// Returns an approximation to the inverse sine of x, in radians.
 pub fn asin(x: f64) f64 {
     return std.math.asin(x);
 }
 
+/// Returns an approximation to the inverse cosine of x, in radians.
 pub fn acos(x: f64) f64 {
     return std.math.acos(x);
 }
 
+/// Returns an approximation to the inverse tangent of x, in radians.
 pub fn atan(x: f64) f64 {
     return std.math.atan(x);
 }
 
+/// Returns an approximation to the angle of the point (x, y), in radians.
 pub fn atan2(y: f64, x: f64) f64 {
     return std.math.atan2(y, x);
 }
 
+/// Returns an approximation to the hyperbolic sine of x.
 pub fn sinh(x: f64) f64 {
     return std.math.sinh(x);
 }
 
+/// Returns an approximation to the hyperbolic cosine of x.
 pub fn cosh(x: f64) f64 {
     return std.math.cosh(x);
 }
 
+/// Returns an approximation to the hyperbolic tangent of x.
 pub fn tanh(x: f64) f64 {
     return std.math.tanh(x);
 }
 
+/// Returns an approximation to the inverse hyperbolic sine of x.
 pub fn asinh(x: f64) f64 {
     return std.math.asinh(x);
 }
 
+/// Returns an approximation to the inverse hyperbolic cosine of x.
 pub fn acosh(x: f64) f64 {
     return std.math.acosh(x);
 }
 
+/// Returns an approximation to the inverse hyperbolic tangent of x.
 pub fn atanh(x: f64) f64 {
     return std.math.atanh(x);
 }
 
 /// Math.hypot() - variadic; ECMA order of special cases matters: an
 /// Infinity argument wins over a NaN argument anywhere else in the list.
+/// Known limitation: directly squaring finite inputs may overflow or underflow.
+/// An empty slice or a slice of zeros returns +0.
 pub fn hypot(values: []const f64) f64 {
     for (values) |v| {
         if (std.math.isInf(v)) return std.math.inf(f64);
@@ -311,24 +349,10 @@ pub fn random(rand: std.Random) f64 {
     return rand.float(f64);
 }
 
-/// Math.sumPrecise(values) -- ES2025's correctly-rounded summation:
-/// the result must be the f64 nearest the EXACT mathematical sum of
-/// `values` (finite ones only -- NaN/+-Infinity/all-minus-zero are
-/// each their own special case, handled by the caller via `state`
-/// tracking before any of these finite values reach this function;
-/// see math_builtins.zig's mathSumPrecise).
-///
-/// A faithful, structure-preserving port of the official TC39
-/// reference polyfill (Shewchuk's exact-floating-point-summation
-/// algorithm, extended to survive intermediate overflow via a
-/// "biased partial" representing 2**1024 times its value):
-/// https://github.com/tc39/proposal-math-sum/blob/main/polyfill/polyfill.mjs
-/// No live Node in this environment ships Math.sumPrecise yet
-/// (Stage 3, confirmed absent from the newest available build) to
-/// verify against directly -- instead verified against test262's own
-/// `test/built-ins/Math/sumPrecise/sum.js`, whose assertions are
-/// "chosen for having exercised bugs in real implementations": all
-/// pass bit-for-bit, including every overflow/cancellation case.
+// Port of TC39's reference polyfill finite-summation algorithm, with biased
+// partials to handle intermediate overflow:
+// https://github.com/tc39/proposal-math-sum/blob/main/polyfill/polyfill.mjs
+// JavaScript iterator and special-value state handling belongs to the caller.
 const MAX_DOUBLE: f64 = 1.79769313486231570815e+308;
 const PENULTIMATE_DOUBLE: f64 = 1.79769313486231550856e+308;
 const MAX_ULP: f64 = MAX_DOUBLE - PENULTIMATE_DOUBLE;
@@ -345,13 +369,17 @@ fn twosum(x: f64, y: f64) TwoSum {
     return .{ .hi = hi, .lo = lo };
 }
 
+/// Allocation failure or overflow of the internal biased-partial counter.
 pub const SumPreciseError = error{ Overflow, OutOfMemory };
 
-/// `values` must contain ONLY finite f64s (no NaN/+-Infinity -- the
-/// caller has already special-cased those). Real -0 entries are
-/// harmless (a no-op in exact summation) but the caller may filter
-/// them; either way this returns +0/-0 correctly per the exact sum's
-/// own sign.
+/// Computes the correctly rounded sum of finite f64 values using allocator
+/// for temporary partials. Returns OutOfMemory if allocation fails, or Overflow
+/// if the internal biased-partial counter reaches 2^53 in magnitude.
+///
+/// The caller must handle NaN, infinities, JavaScript iteration, and type errors.
+/// Known limitation: an empty slice and slices containing only -0 return +0;
+/// ECMAScript Math.sumPrecise requires -0 for those inputs, so the caller must
+/// handle them before invoking this finite-summation helper.
 pub fn sumPrecise(allocator: std.mem.Allocator, values: []const f64) SumPreciseError!f64 {
     if (values.len == 0) return 0.0;
     var partials: std.ArrayList(f64) = .empty;

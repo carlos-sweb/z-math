@@ -1,0 +1,57 @@
+name: API documentation
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Test
+        run: zig build test --summary all
+      - name: Test ReleaseSafe
+        run: zig build test -Doptimize=ReleaseSafe --summary all
+      - name: Generate native Zig API documentation
+        run: zig build docs --summary all
+      - name: Verify documentation artifacts
+        run: |
+          test -s zig-out/docs/index.html
+          test -s zig-out/docs/main.wasm
+      - name: Configure Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Upload documentation
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: zig-out/docs
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy API documentation
+        id: deployment
+        uses: actions/deploy-pages@v4
